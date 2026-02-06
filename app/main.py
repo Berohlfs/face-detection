@@ -3,6 +3,8 @@ import mediapipe as mp
 import numpy as np
 import time
 import os
+import subprocess
+from glob import glob
 
 WINDOW_NAME = "Posture Detection"
 
@@ -10,10 +12,36 @@ WINDOW_NAME = "Posture Detection"
 NECK_ANGLE_THRESHOLD = 15  # forward head detection
 TORSO_ANGLE_THRESHOLD = 15  # slouching detection
 
+# Audio alert settings
+ALERT_COOLDOWN = 5  # seconds between alerts
+
 # Right-side landmark indices
 EAR = 8
 SHOULDER = 12
 HIP = 24
+
+# Track audio playback process
+audio_process = None
+sound_index = 0
+
+
+def load_sounds(sounds_dir):
+    """Load all MP3 files from the sounds directory."""
+    return sorted(glob(os.path.join(sounds_dir, "*.mp3")))
+
+
+def play_next_sound(sound_files):
+    """Play the next sound file in sequence using macOS afplay (non-blocking)."""
+    global audio_process, sound_index
+    if not sound_files:
+        return
+    # Don't play if audio is still playing
+    if audio_process and audio_process.poll() is None:
+        return
+    sound = sound_files[sound_index % len(sound_files)]
+    sound_index += 1
+    audio_process = subprocess.Popen(["afplay", sound])
+
 
 # Pose connections for drawing skeleton
 POSE_CONNECTIONS = [
@@ -135,8 +163,20 @@ def main():
 
     cv2.moveWindow(WINDOW_NAME, 100, 100)
 
+    # Load sound files
+    sounds_dir = os.path.join(script_dir, "sounds")
+    sound_files = load_sounds(sounds_dir)
+    if sound_files:
+        print(f"Loaded {len(sound_files)} sound file(s) from {sounds_dir}")
+    else:
+        print(f"No MP3 files found in {sounds_dir} - audio alerts disabled")
+
     # Track timestamps for VIDEO mode
     start_time = time.time()
+
+    # Track posture state for transitions
+    previous_posture_good = True
+    last_alert_time = 0
 
     while True:
         ret, frame = cap.read()
@@ -183,6 +223,14 @@ def main():
                 for i, alert in enumerate(alerts):
                     cv2.putText(frame, alert, (20, 130 + i * 30),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+                # Play sound on good → bad transition (with cooldown)
+                if not is_good and previous_posture_good:
+                    if time.time() - last_alert_time > ALERT_COOLDOWN:
+                        play_next_sound(sound_files)
+                        last_alert_time = time.time()
+
+                previous_posture_good = is_good
             else:
                 cv2.putText(frame, "Position yourself sideways", (20, 50),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
