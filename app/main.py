@@ -14,11 +14,17 @@ TORSO_ANGLE_THRESHOLD = 15  # slouching detection
 
 # Audio alert settings
 ALERT_COOLDOWN = 5  # seconds between alerts
+BAD_POSTURE_DELAY = 3  # seconds of bad posture before alert
 
-# Right-side landmark indices
+# Landmark indices
 EAR = 8
+LEFT_SHOULDER = 11
 SHOULDER = 12
+LEFT_HIP = 23
 HIP = 24
+
+# Sideways detection — max horizontal spread between left/right shoulders
+SHOULDER_SPREAD_THRESHOLD = 0.12
 
 # Track audio playback process
 audio_process = None
@@ -174,8 +180,9 @@ def main():
     # Track timestamps for VIDEO mode
     start_time = time.time()
 
-    # Track posture state for transitions
-    previous_posture_good = True
+    # Track posture state
+    bad_posture_start = None
+    alerted_this_streak = False
     last_alert_time = 0
 
     while True:
@@ -197,11 +204,14 @@ def main():
         if results.pose_landmarks and len(results.pose_landmarks) > 0:
             landmarks = results.pose_landmarks[0]
 
-            # Check if key landmarks are visible
-            if (landmarks[EAR].visibility > 0.5 and
-                landmarks[SHOULDER].visibility > 0.5 and
-                landmarks[HIP].visibility > 0.5):
+            # Check if positioned sideways by measuring shoulder spread
+            shoulder_spread = abs(landmarks[LEFT_SHOULDER].x - landmarks[SHOULDER].x)
+            key_visible = (landmarks[EAR].visibility > 0.5 and
+                           landmarks[SHOULDER].visibility > 0.5 and
+                           landmarks[HIP].visibility > 0.5)
+            is_sideways = key_visible and shoulder_spread < SHOULDER_SPREAD_THRESHOLD
 
+            if is_sideways:
                 # Analyze posture
                 is_good, neck_angle, torso_angle, alerts = analyze_posture(landmarks)
 
@@ -224,16 +234,31 @@ def main():
                     cv2.putText(frame, alert, (20, 130 + i * 30),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
-                # Play sound on good → bad transition (with cooldown)
-                if not is_good and previous_posture_good:
-                    if time.time() - last_alert_time > ALERT_COOLDOWN:
+                # Play sound after sustained bad posture (with cooldown)
+                if not is_good:
+                    if bad_posture_start is None:
+                        bad_posture_start = time.time()
+                    elif (not alerted_this_streak
+                          and time.time() - bad_posture_start >= BAD_POSTURE_DELAY
+                          and time.time() - last_alert_time > ALERT_COOLDOWN):
                         play_next_sound(sound_files)
                         last_alert_time = time.time()
-
-                previous_posture_good = is_good
+                        alerted_this_streak = True
+                else:
+                    bad_posture_start = None
+                    alerted_this_streak = False
             else:
-                cv2.putText(frame, "Position yourself sideways", (20, 50),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+                bad_posture_start = None
+                alerted_this_streak = False
+                h, w = frame.shape[:2]
+                text = "POSITION YOURSELF SIDEWAYS"
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                scale = 1.5
+                thickness = 4
+                (tw, th), _ = cv2.getTextSize(text, font, scale, thickness)
+                x = (w - tw) // 2
+                y = (h + th) // 2
+                cv2.putText(frame, text, (x, y), font, scale, (0, 255, 255), thickness)
 
             # Draw pose landmarks
             draw_landmarks(frame, landmarks)
